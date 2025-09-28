@@ -45,6 +45,20 @@ static InitFunction initFunction([]()
 		g_scopeHandler.Initialize();
 	}
 
+	// trigger removing funcrefs on the *resource manager* so that it'll still happen when a runtime is destroyed
+	ResourceManager::OnInitializeInstance.Connect([](ResourceManager* manager)
+	{
+		manager->OnTick.Connect([]()
+		{
+			RefAndPersistent<NodeScriptRuntime>* deleteRef;
+
+			while (g_cleanUpFuncRefs.try_pop(reinterpret_cast<void*&>(deleteRef)))
+			{
+				delete deleteRef;
+			}
+		});
+	});
+
 	// initialize the parent node environment, should be done one time per process
 	result_t hr = g_nodeEnv.Initialize();
 	if (FX_FAILED(hr) || g_nodeEnv.IsStartNode())
@@ -64,7 +78,6 @@ static const char* g_platformScripts[] =
 	"citizen:/scripting/v8/natives_server.js",
 	"citizen:/scripting/v8/console.js",
 	"citizen:/scripting/v8/timer.js",
-	"citizen:/scripting/v8/bufferish.js",
 	"citizen:/scripting/v8/msgpack.js",
 	"citizen:/scripting/v8/eventemitter2.js",
 	"citizen:/scripting/v8/main.js"
@@ -122,6 +135,32 @@ static std::pair<std::string, v8::FunctionCallback> g_globalFunctions[] =
 	{ "readbuffer", V8_ReadBuffer<NodeScriptRuntime, SharedPushEnvironment<NodeScriptRuntime>> },
 };
 
+static void OnMessage(v8::Local<v8::Message> message, v8::Local<v8::Value> error)
+{
+	auto isolate = message->GetIsolate();
+
+	v8::String::Utf8Value messageStr(isolate, message->Get());
+	v8::String::Utf8Value errorStr(isolate, error);
+
+	std::stringstream stack;
+	auto stackTrace = message->GetStackTrace();
+
+	for (int i = 0; i < stackTrace->GetFrameCount(); i++)
+	{
+		auto frame = stackTrace->GetFrame(isolate, i);
+
+		v8::String::Utf8Value sourceStr(isolate, frame->GetScriptNameOrSourceURL());
+		v8::String::Utf8Value functionStr(isolate, frame->GetFunctionName());
+
+		stack << (*sourceStr ? *sourceStr : "(unknown)") << "(" << frame->GetLineNumber() << "," << frame->GetColumn() << "): " << (*functionStr ? *functionStr : "") << "\n";
+	}
+
+	auto context = isolate->GetEnteredOrMicrotaskContext();
+	auto data = context->GetEmbedderData(16);
+	auto rt = reinterpret_cast<NodeScriptRuntime*>(v8::Local<v8::External>::Cast(data)->Value());
+	ScriptTrace(rt, "%s\n%s\n%s\n", *messageStr, stack.str(), *errorStr);
+}
+
 result_t NodeScriptRuntime::Create(IScriptHost* host)
 {
 	// assign the script host
@@ -162,11 +201,15 @@ result_t NodeScriptRuntime::Create(IScriptHost* host)
 	m_isolate = node::NewIsolate(allocator, m_uvLoop, g_nodeEnv.GetPlatform());
 	m_isolateData = node::CreateIsolateData(m_isolate, m_uvLoop, g_nodeEnv.GetPlatform(), allocator);
 
+	m_isolate->SetCaptureStackTraceForUncaughtExceptions(true);
+	m_isolate->AddMessageListener(OnMessage);
+
 	runtimeMap[m_isolate] = this;
 
 	{
 		// create a scope to hold handles we use here
 		SharedPushEnvironmentNoContext pushed(m_isolate);
+		fx::PushEnvironment fxenv(this);
 		
 		// create global state
 		v8::Local<v8::ObjectTemplate> global = v8::ObjectTemplate::New(m_isolate);

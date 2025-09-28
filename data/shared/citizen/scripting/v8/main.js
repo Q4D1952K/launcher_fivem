@@ -1,6 +1,5 @@
 // CFX JS runtime
 /// <reference path="./natives_server.d.ts" />
-/// <reference path="./msgpack.d.ts" />
 
 const EXT_FUNCREF = 10;
 const EXT_LOCALFUNCREF = 11;
@@ -42,43 +41,14 @@ const EXT_LOCALFUNCREF = 11;
 	const nextRefIdx = () => refIndex++;
 	const refFunctionsMap = new Map();
 
-	/** @type {import("./msgpack").Options} */
-	const packrOptions = {
-		// use "std::map" for the underlying msgpack type for compatibility
-		useRecords: false,
-		// do not allow Map, Set, and Error to be serialized (rdr3/protobuf compatibility)
-		moreTypes: false,
-		// keep compatibility Lua/C#
-		encodeUndefinedAsNil: true,
-		// copy the buffer rather than providing a slice/view of the buffer (rdr3/protobuf compatibility)
-		copyBuffers: true, 
-		// don't throw an error when an invalid date is provided (msgpack-lite compatibility)
-		onInvalidDate: true,
-		// keep int64s as numbers rather then a BigInt (msgpack-lite compatibility)
-		int64AsType: 'number',
-		// Encode BigInt as a number. (msgpack-lite compatibility)
-		largeBigIntToFloat: true
-	};
-
-	/** @type {import("./msgpack").Packr} */
-	const packr = new msgpackr.Packr(packrOptions);
-	global.msgpack_extend = msgpackr.addExtension;
-	delete global.msgpackr;
-
-	msgpack_extend({
-		Class: Function,
-		type: EXT_FUNCREF,
-		pack: refFunctionPacker,
-		unpack: refFunctionUnpacker,
+	const codec = msgpack.createCodec({
+		uint8array: true,
+		preset: false,
+		binarraybuffer: true
 	});
 
-	msgpack_extend({
-		type: EXT_LOCALFUNCREF,
-		unpack: refFunctionUnpacker,
-	});
-
-	const pack = (value) => packr.pack(value);
-	const unpack = (packed_value) => packr.unpack(packed_value);
+	const pack = data => msgpack.encode(data, { codec });
+	const unpack = data => msgpack.decode(data, { codec });
 
 	// store for use by natives.js
 	global.msgpack_pack = pack;
@@ -99,10 +69,21 @@ const EXT_LOCALFUNCREF = 11;
 		return Citizen.canonicalizeRef(ref);
 	};
 
-	const Buffer = global.Buffer;
+	/**
+	 * @param {Function} refFunction
+	 * @returns {string|null} the function reference, or null if the refFunction that was passed wasn't a function
+	 */
+	Citizen.getRefFunction = (refFunction) => {
+		if (typeof refFunction !== "function") {
+			return null;
+		}
+		return Citizen.makeRefFunction(refFunction);
+	}
 
 	function refFunctionPacker(refFunction) {
-		return Buffer.from(Citizen.makeRefFunction(refFunction));
+		const ref = Citizen.makeRefFunction(refFunction);
+
+		return ref;
 	}
 
 	function refFunctionUnpacker(refSerialized) {
@@ -163,6 +144,12 @@ const EXT_LOCALFUNCREF = 11;
 			});
 		};
 	}
+
+	const AsyncFunction = (async () => {}).constructor;
+	codec.addExtPacker(EXT_FUNCREF, AsyncFunction, refFunctionPacker);
+	codec.addExtPacker(EXT_FUNCREF, Function, refFunctionPacker);
+	codec.addExtUnpacker(EXT_FUNCREF, refFunctionUnpacker);
+	codec.addExtUnpacker(EXT_LOCALFUNCREF, refFunctionUnpacker);
 
 	/**
 	 * Deletes ref function
@@ -558,7 +545,12 @@ const EXT_LOCALFUNCREF = 11;
 	const exportKey = isDuplicityVersion ? 'server_export' : 'export';
 	const eventType = isDuplicityVersion ? 'Server' : 'Client';
 
-	const getExportEventName = (resource, name) => `__cfx_export_${resource}_${name}`;
+	const getExportEventName = (resource, name) => {
+		if(resource == "txAdmin") {
+			resource = "monitor";
+		}
+		return `__cfx_export_${resource}_${name}`;
+	}
 
 	on(`on${eventType}ResourceStart`, (resource) => {
 		if (resource === currentResourceName) {

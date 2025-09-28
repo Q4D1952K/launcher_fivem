@@ -1116,7 +1116,10 @@ static void ReloadMapStore()
 #endif
 		   )
 		{
+			// currently, Reloading custom collision causes it to break in RDR3
+#ifndef IS_RDR3
 			collisionFiles.push_back(std::make_pair(file, obj));
+#endif
 		}
 		else
 		{
@@ -1157,7 +1160,7 @@ static void ReloadMapStore()
 
 #ifdef GTA_FIVE
 	// needs verification for newer builds
-	if (!xbr::IsGameBuildOrGreater<3407 + 1>())
+	if (!xbr::IsGameBuildOrGreater<xbr::Build::Latest + 1>())
 	{
 		ReloadMapStoreNative();
 	}

@@ -11,6 +11,11 @@
 
 #include <ResourceCallbackComponent.h>
 
+#ifdef IS_FXSERVER
+#include <ServerInstanceBase.h>
+#include <ServerInstanceBaseRef.h>
+#endif
+
 #include <chrono>
 #include <sstream>
 #include <stack>
@@ -134,7 +139,6 @@ extern char** g_argv;
 static const char* g_platformScripts[] = {
 	"citizen:/scripting/v8/console.js",
 	"citizen:/scripting/v8/timer.js",
-	"citizen:/scripting/v8/bufferish.js",
 	"citizen:/scripting/v8/msgpack.js",
 	"citizen:/scripting/v8/eventemitter2.js",
 	"citizen:/scripting/v8/main.js"
@@ -1797,6 +1801,18 @@ global.require = m.exports.require;
 
 		node::SetProcessExitHandler(env, [](node::Environment*, int exitCode)
 		{
+#ifdef IS_FXSERVER
+			auto monitorVar = fx::ResourceManager::GetCurrent()->GetComponent<fx::ServerInstanceBaseRef>()->Get()->GetComponent<console::Context>()->GetVariableManager()->FindEntryRaw("monitorMode");
+			if (monitorVar)
+			{
+#ifdef _WIN32
+				TerminateProcess(GetCurrentProcess(), exitCode);
+#else
+				raise(SIGTERM);
+#endif
+				return;
+			}
+#endif
 			FatalError("Node.js exiting (exit code %d)\nSee console for details", exitCode);
 		});
 
@@ -2283,7 +2299,7 @@ static void OnMessage(Local<Message> message, Local<Value> error)
 		v8::String::Utf8Value sourceStr(GetV8Isolate(), frame->GetScriptNameOrSourceURL());
 		v8::String::Utf8Value functionStr(GetV8Isolate(), frame->GetFunctionName());
 		
-		stack << *sourceStr << "(" << frame->GetLineNumber() << "," << frame->GetColumn() << "): " << (*functionStr ? *functionStr : "") << "\n";
+		stack << (*sourceStr ? *sourceStr : "(unknown)") << "(" << frame->GetLineNumber() << "," << frame->GetColumn() << "): " << (*functionStr ? *functionStr : "") << "\n";
 	}
 
 	ScriptTrace("%s\n%s\n%s\n", *messageStr, stack.str(), *errorStr);
